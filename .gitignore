@@ -1,0 +1,9 @@
+node_modules
+.env
+credentials.json
+*.log
+dist
+build
+__pycache__
+venv
+.env.local
