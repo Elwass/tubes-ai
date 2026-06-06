@@ -24,8 +24,8 @@ build/
 .streamlit/secrets.toml
 
 # Credentials / service account files
-credentials.json
-*credentials*.json
+service_account.json
+*service_account*.json
 *.pem
 *.p12
 *.key

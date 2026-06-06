@@ -171,6 +171,67 @@ def _is_valid_email(value: str) -> bool:
     return bool(re.match(pattern, value.strip()))
 
 
+def _safe_error_text(exc: Exception) -> str:
+    if exc is None:
+        return "unknown"
+
+    text = str(exc).strip()
+    if text:
+        return text
+
+    if exc.args:
+        try:
+            return "; ".join([str(a) for a in exc.args if str(a).strip()]) or "unknown"
+        except Exception:
+            pass
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            json_loader = getattr(response, "json", None)
+            if callable(json_loader):
+                payload = json_loader()
+                if isinstance(payload, dict):
+                    if isinstance(payload.get("error"), dict):
+                        err_obj = payload["error"]
+                        msg = str(err_obj.get("message", "")).strip()
+                        reasons = err_obj.get("errors")
+                        if isinstance(reasons, list) and reasons:
+                            extra = [
+                                str(r.get("reason", "")).strip()
+                                for r in reasons
+                                if isinstance(r, dict) and str(r.get("reason", "")).strip()
+                            ]
+                            if extra:
+                                msg = f"{msg} (reason: {', '.join(extra)})"
+                        if msg:
+                            return msg
+                    txt = str(payload).strip()
+                    if txt:
+                        return txt
+        except Exception:
+            pass
+
+        for key in ("text", "content", "reason", "reason_phrase"):
+            value = getattr(response, key, None)
+            if value:
+                if isinstance(value, (bytes, bytearray)):
+                    try:
+                        value = value.decode("utf-8", errors="ignore")
+                    except Exception:
+                        value = str(value)
+                value = str(value).strip()
+                if value:
+                    return value
+
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None:
+            return f"HTTP {status_code}"
+
+    err_type = type(exc).__name__
+    return f"{err_type}: unknown"
+
+
 def _build_recommendation_email_html(
     recipient_email: str,
     nama: str,
@@ -366,6 +427,29 @@ def _load_gcp_credentials():
     if env_path and Path(env_path).exists():
         return Path(env_path)
 
+    for path_text in (
+        "service_account.json",
+        "credentials.json",
+    ):
+        candidate = Path(path_text)
+        if candidate.exists():
+            return candidate
+
+    try:
+        secrets_paths = (
+            st.secrets.get("gcp_service_account_path"),
+            st.secrets.get("google_service_account_path"),
+            st.secrets.get("SERVICE_ACCOUNT_PATH"),
+        )
+        for candidate_text in secrets_paths:
+            if not candidate_text:
+                continue
+            candidate = Path(str(candidate_text))
+            if candidate.exists():
+                return candidate
+    except Exception:
+        pass
+
     try:
         info = st.secrets.get("gcp_service_account")
         if info:
@@ -375,9 +459,6 @@ def _load_gcp_credentials():
     except Exception:
         pass
 
-    legacy_path = Path("credentials.json")
-    if legacy_path.exists():
-        return legacy_path
     return None
 
 
@@ -418,6 +499,8 @@ def _append_to_sheet(payload: dict[str, Any], recommendation: str) -> tuple[bool
 
     try:
         sheet = client.open_by_key(sheet_id).sheet1
+        if sheet is None:
+            return False, "WorksheetNotFound"
         row = [
             payload.get("Nama Lengkap", ""),
             payload.get("Kelas", ""),
@@ -428,12 +511,33 @@ def _append_to_sheet(payload: dict[str, Any], recommendation: str) -> tuple[bool
         for col in FEATURE_COLUMNS:
             row.append(payload.get(col, ""))
         row.append(recommendation)
-        sheet.append_row(row)
+        sheet.append_row(row, value_input_option="USER_ENTERED")
         return True, "OK"
+    except gspread.exceptions.APIError as exc:
+        msg = str(exc).lower()
+        if "permission" in msg or "forbidden" in msg or "insufficient" in msg:
+            return False, "PermissionDenied: service account belum dibagikan dengan akses Editor."
+        detail = _safe_error_text(exc)
+        return False, f"GoogleAPIError: {detail}"
+    except PermissionError as exc:
+        message = _safe_error_text(exc).lower()
+        if "sheets api has not been used" in message or "google sheets api has not been enabled" in message:
+            return (
+                False,
+                "SheetsApiNotEnabled: aktifkan Google Sheets API di Google Cloud Project (APIs & Services > Library).",
+            )
+        if "permission" in message or "forbidden" in message or "insufficient" in message:
+            return False, "PermissionDenied: service account belum dibagikan dengan akses Editor."
+        if "not found" in message or "not accessible" in message:
+            return False, "SpreadsheetNotFound: sheet_id tidak ditemukan / tidak boleh diakses."
+        return False, f"PermissionError: {_safe_error_text(exc)}"
     except gspread.exceptions.SpreadsheetNotFound:
         return False, "SpreadsheetNotFound"
+    except gspread.exceptions.WorksheetNotFound:
+        return False, "WorksheetNotFound: tidak menemukan sheet pertama (sheet1) di spreadsheet."
     except Exception as exc:
-        return False, str(exc)
+        details = _safe_error_text(exc)
+        return False, f"RuntimeError: {details}"
 
 
 def _load_artifact() -> dict[str, Any] | None:
@@ -552,19 +656,39 @@ def _build_sidebar() -> str:
     operator = st.sidebar.text_input("Nama Operator", value="Operator")
     email_ready = _resolve_smtp_config() is not None
     sheet_id = _resolve_spreadsheet_id()
-    sheet_ready = bool(sheet_id) and _load_gcp_credentials() is not None
 
     if email_ready:
         st.sidebar.success("Email (SMTP): aktif")
     else:
         st.sidebar.warning("Email (SMTP): belum siap (cek `.env` atau `st.secrets`).")
 
-    if sheet_ready:
-        st.sidebar.success("Google Sheets: aktif")
-    elif sheet_id and not _load_gcp_credentials():
-        st.sidebar.warning("Google Sheets: sheet ID ada, tapi credentials belum disiapkan.")
+    if not sheet_id:
+        st.sidebar.warning("Google Sheets: sheet ID belum disediakan.")
     else:
-        st.sidebar.warning("Google Sheets: belum siap (sheet ID/credentials belum lengkap).")
+        credentials_ready = _load_gcp_credentials() is not None
+        if not credentials_ready:
+            st.sidebar.warning("Google Sheets: sheet ID ada, tapi credentials belum disiapkan.")
+        else:
+            sheet_client = _init_connection()
+            if sheet_client is None:
+                st.sidebar.warning("Google Sheets: credential ada, tetapi otentikasi gagal.")
+            else:
+                try:
+                    _ = sheet_client.open_by_key(sheet_id).sheet1
+                except PermissionError as exc:
+                    msg = _safe_error_text(exc).lower()
+                    if "sheets api has not been used" in msg or "google sheets api has not been enabled" in msg:
+                        st.sidebar.error("Google Sheets: API belum aktif (Google Sheets API perlu diaktifkan).")
+                    elif "permission" in msg or "forbidden" in msg or "insufficient" in msg:
+                        st.sidebar.warning("Google Sheets: sheet ID ada, tapi credentials belum shared sebagai Editor.")
+                    elif "not found" in msg:
+                        st.sidebar.warning("Google Sheets: sheet ID tidak ditemukan.")
+                    else:
+                        st.sidebar.warning(f"Google Sheets: belum siap ({_safe_error_text(exc)}).")
+                except Exception as exc:
+                    st.sidebar.warning(f"Google Sheets: belum siap ({_safe_error_text(exc)}).")
+                else:
+                    st.sidebar.success("Google Sheets: aktif")
 
     st.sidebar.markdown("- Status input: otomatis `Calon Dewan`")
     if st.sidebar.button("Muat ulang model"):
@@ -816,6 +940,15 @@ with tab_pred:
             st.info("Google Sheets belum aktif (credential/ID belum disiapkan).")
         else:
             st.warning(f"Gagal menyimpan ke sheet: {status}")
+            if status.startswith("PermissionDenied") or "permission" in status.lower():
+                st.info("Periksa apakah service account ini sudah di-share sebagai Editor pada spreadsheet.")
+            elif status.startswith("SheetsApiNotEnabled"):
+                st.info("Aktifkan Google Sheets API pada Google Cloud project service account.")
+            elif status.startswith("SpreadsheetNotFound"):
+                st.info("Pastikan `SPREADSHEET_ID` benar dan sheet tidak dibatasi akses.")
+            elif status.startswith("WorksheetNotFound"):
+                st.info("Pastikan ada sheet pertama (Sheet1) di Google Spreadsheet.")
+                st.info("Jika nama Sheet tidak otomatis `Sheet1`, rename sheet pertama menjadi `Sheet1` atau buat ulang sheet.")
 
 with tab_batch:
     st.markdown("<div class='app-card'><div class='section-title'>Upload Batch (CSV)</div>", unsafe_allow_html=True)
