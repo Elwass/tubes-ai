@@ -488,6 +488,40 @@ def _init_connection():
         return None
 
 
+def _build_sheet_header() -> list[str]:
+    return [
+        "Nama Lengkap",
+        "Kelas",
+        "Status",
+        "Waktu Input",
+        "Rekomendasi Dari Form",
+        "Rekomendasi Model",
+        *FEATURE_COLUMNS,
+        "Rekomendasi Final",
+    ]
+
+
+def _ensure_sheet_header(sheet) -> bool:
+    expected_markers = {"Nama Lengkap", "Kelas", "Status", "Waktu Input"}
+    header = _build_sheet_header()
+    current = [str(cell).strip() for cell in sheet.row_values(1)]
+    if not current:
+        try:
+            sheet.insert_row(header, index=1, value_input_option="USER_ENTERED")
+            return True
+        except Exception:
+            return False
+
+    has_markers = any(marker in set(current) for marker in expected_markers)
+    if not has_markers:
+        try:
+            sheet.insert_row(header, index=1, value_input_option="USER_ENTERED")
+            return True
+        except Exception:
+            return False
+    return False
+
+
 def _append_to_sheet(payload: dict[str, Any], recommendation: str) -> tuple[bool | None, str]:
     sheet_id = _resolve_spreadsheet_id()
     if not sheet_id:
@@ -501,6 +535,9 @@ def _append_to_sheet(payload: dict[str, Any], recommendation: str) -> tuple[bool
         sheet = client.open_by_key(sheet_id).sheet1
         if sheet is None:
             return False, "WorksheetNotFound"
+
+        _ensure_sheet_header(sheet)
+
         row = [
             payload.get("Nama Lengkap", ""),
             payload.get("Kelas", ""),
