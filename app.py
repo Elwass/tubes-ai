@@ -63,7 +63,7 @@ MANUAL_RULES: Dict[str, list[tuple[str, float, str, str]]] = {
 
 
 st.set_page_config(
-    page_title="Sistem Rekomendasi Divisi Pramuka",
+    page_title="Sistem Rekomendasi Divisi Perusahaan",
     page_icon="??",
     layout="wide",
 )
@@ -303,7 +303,7 @@ def _build_recommendation_email_html(
     ) if logic_ranked else "<tr><td style='padding:8px 10px; border:1px solid #dbe3eb;' colspan='4'>Tidak tersedia</td></tr>"
 
     text_body = (
-        "Sistem Rekomendasi Divisi Pramuka\n\n"
+        "Sistem Rekomendasi Divisi Perusahaan\n\n"
         f"Yth. {nama}\n\n"
         f"Nama: {nama}\n"
         f"Kelas: {kelas}\n"
