@@ -1,9 +1,32 @@
-node_modules
-.env
-credentials.json
+# Byte-compiled / cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+venv/
+
+# Logs
 *.log
-dist
-build
-__pycache__
-venv
+
+# Build / distribution artifacts
+node_modules/
+dist/
+build/
+
+# Environment files
+.env
 .env.local
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Credentials / service account files
+credentials.json
+*credentials*.json
+*.pem
+*.p12
+*.key
+*.crt
